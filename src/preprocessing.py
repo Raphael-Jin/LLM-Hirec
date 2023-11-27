@@ -125,15 +125,33 @@ def read_clickhistory(news_index,data_root_path,filename):
                 pos.append(docid)
             else:
                 neg.append(docid)
-        sessions.append([true_click,pos,neg])
+        # sessions.append([true_click,pos,neg])
+
+        timestamp = trans2tsp(eventime)
+        sessions.append([timestamp, true_click, pos, neg])
+
     return sessions
+
+def decay_function(session_index_diff):
+    decay_rate = 0.9  # 衰减率可以调整
+    return decay_rate ** session_index_diff
 
 def parse_user(news_index,session):
     user_num = len(session)
-    user={'click': np.zeros((user_num,MAX_ALL),dtype='int32'),}
+    user={'click': np.zeros((user_num,MAX_ALL),dtype='int32'),
+           'time_decay': np.zeros((user_num, MAX_ALL), dtype='float32'),}
+    
+    # current_timestamp = max([s[0] for s in session])
+    # 我们将使用会话索引作为衰减的依据，最早的会话（索引最小）将有最大的衰减
+    # Only keep most recent MAX_ALL items, pad zero or cut off
+    max_session_index = len(session) - 1
     for user_id in range(len(session)):
         tclick = []
-        click, pos, neg =session[user_id]
+        # click, pos, neg =session[user_id]
+        timestamp, click, pos, neg = session[user_id]
+        # decay_weights = np.array([decay_function(current_timestamp - ts) for ts in timestamp])
+        decay_weights = [decay_function(max_session_index - user_id) for _ in range(MAX_ALL)]
+
         for i in range(len(click)):
             tclick.append(news_index[click[i]])
         click = tclick
@@ -143,7 +161,12 @@ def parse_user(news_index,session):
         else:
             click=[0]*(MAX_ALL-len(click)) + click
             
+        
+        
         user['click'][user_id] = np.array(click)
+        user['time_decay'][user_id] = np.array(decay_weights)
+
+        # user['click'][user_id] = np.array(click)
     return user
 
 def get_train_input(news_index,session):
@@ -152,7 +175,7 @@ def get_train_input(news_index,session):
     user_id = []
     for sess_id in range(len(session)):
         sess = session[sess_id]
-        _, poss, negs=sess
+        _, _, poss, negs=sess
         for i in range(len(poss)):
             pos = poss[i]
             neg=newsample(negs,npratio)
@@ -179,7 +202,7 @@ def get_test_input(news_index,session):
     Impressions = []
     userid = []
     for sess_id in range(len(session)):
-        _, poss, negs = session[sess_id]
+        _, _, poss, negs = session[sess_id]
         imp = {'labels':[],
                 'docs':[]}
         userid.append(sess_id)
