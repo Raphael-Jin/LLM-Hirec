@@ -110,19 +110,28 @@ def ConDot():
     return Model(vec_input,score)
 
 def get_doc_encoder(title_word_embedding_matrix,entity_emb_matrix):
-
-    news_input = Input(shape=(35,),dtype='int32')
-    
-    
+    # TODO: add abstraction
+    news_input = Input(shape=(65,),dtype='int32')
+    # TODO: add a model in abstarction for mdoel tuning: freeze part of the model layer absatrction到模型的输出，其实是由一个BERT模型来做的，我们需要保证这个BERT或者大模型的参数在参与训练的过程中不能过大,768维度*abs_len,再过一个embedding层，然后我们实际训练的事这个embedding层，这样类似于一个adapter
+    abs_word_embedding_layer = Embedding(title_word_embedding_matrix.shape[0], 300, weights=[title_word_embedding_matrix],trainable=True)
     sentence_input = keras.layers.Lambda(lambda x:x[:,:30])(news_input)
+    abs_input = keras.layers.Lambda(lambda x:x[:,35:])(news_input)
     title_word_embedding_layer = Embedding(title_word_embedding_matrix.shape[0], 300, weights=[title_word_embedding_matrix],trainable=True)
+    # 查看Embedding的参数
     word_vecs = title_word_embedding_layer(sentence_input)
     droped_vecs = Dropout(0.2)(word_vecs)
     word_rep = Attention(20,20)([droped_vecs]*3)
     droped_rep = Dropout(0.2)(word_rep)
     title_vec = AttentivePooling(30,400)(droped_rep)
+    # TODO: abs_vec需要调整他的超参数
+    abs_vec = title_word_embedding_layer(abs_input)
+    droped_abs_vecs = Dropout(0.2)(abs_vec)
+    abs_word_rep = Attention(20,20)([droped_abs_vecs]*3)
+    abs_droped_rep = Dropout(0.2)(abs_word_rep)
+    abs_final_vec = AttentivePooling(30,400)(abs_droped_rep)
     
-    entity_input = keras.layers.Lambda(lambda x:x[:,30:])(news_input)
+    
+    entity_input = keras.layers.Lambda(lambda x:x[:,30:35])(news_input)
     entity_embedding_layer = Embedding(entity_emb_matrix.shape[0], 100, weights=[entity_emb_matrix],trainable=True)
     entity_vecs = entity_embedding_layer(entity_input)
     droped_vecs = Dropout(0.2)(entity_vecs)
@@ -130,7 +139,7 @@ def get_doc_encoder(title_word_embedding_matrix,entity_emb_matrix):
     droped_rep = Dropout(0.2)(entity_rep)
     entity_vec = AttentivePooling(5,100)(droped_rep)
     
-    vec = keras.layers.Concatenate(axis=-1)([title_vec,entity_vec])
+    vec = keras.layers.Concatenate(axis=-1)([title_vec,entity_vec,abs_final_vec]) # 加一个abstraction的vec
     vec = keras.layers.Dense(400)(vec)
     
     
@@ -204,7 +213,7 @@ def HirUserEncoder(category_dict,subcategory_dict):
     AttTrainable = True
     
     clicked_title_input = Input(shape=(50,400,), dtype='float32')
-    
+    # clicked_abs_input = Input(shape=(50,400,), dtype='float32')
     clicked_vert_input = Input(shape=(len(category_dict),50,), dtype='float32')
     clicked_vert_mask_input = Input(shape=(len(category_dict),), dtype='float32')
     
@@ -223,19 +232,23 @@ def HirUserEncoder(category_dict,subcategory_dict):
     vert_num_embedding_layer = subvert_num_embedding_layer #Embedding(51, 128,trainable=True)
     vert_num_scorer = subvert_num_scorer
 
-    title_vecs = clicked_title_input
-    
+    title_vecs = clicked_title_input # shape=(?, 50, 400)
+    # abs_vecs = clicked_abs_input # shape=(?, 50, 400)
     trainable = True
-    
+    # title_vecs = keras.layers.Dot(axes=[-1,-2])([title_vecs,abs_vecs])
+    # title_vecs = np.concatenate([title_vecs,abs_vecs],axis=-1) #concatenate更好，并且需要过一个dense层来满足原先的user_rep
+    # title_vecs = keras.layers.Concatenate(axis=-1)([title_vecs]) # 加一个abstraction的vec
+    # title_vecs = keras.layers.Dense(400)(title_vecs)
     user_subvert_att = Dense(1,trainable=trainable,use_bias=False,kernel_initializer=keras.initializers.Constant(value=np.zeros((400,1))),)(title_vecs)
-
+    # user_subvert_att = Dense(1,trainable=trainable,use_bias=False,kernel_initializer=keras.initializers.Constant(value=np.zeros((400,1))),)(abs_vecs)
     user_subvert_att = keras.layers.Reshape((50,))(user_subvert_att)
     user_subvert_att = keras.layers.RepeatVector(len(subcategory_dict))(user_subvert_att)
     user_subvert_att = keras.layers.Lambda(lambda x:x[0]-100*(1-x[1]))([user_subvert_att,clicked_subvert_input])    
     user_subvert_att = keras.layers.Activation('softmax')(user_subvert_att) #(300,50)
 
     user_subvert_att = keras.layers.Lambda(lambda x:x[0]*x[1])([user_subvert_att,clicked_subvert_input]) #(300,400)
-    user_subvert_rep = keras.layers.Dot(axes=[-1,-2])([user_subvert_att,title_vecs]) #（300,400)
+    user_subvert_rep = keras.layers.Dot(axes=[-1,-2])([user_subvert_att,title_vecs]) #（300,400) #
+    # TODO:降维 400+400->dense
     user_subvert_rep = CategoryEmbLayer(len(subcategory_dict))(user_subvert_rep)  #（300,400) 
     
     
@@ -275,10 +288,10 @@ def HirUserEncoder(category_dict,subcategory_dict):
 def create_model(category_dict,subcategory_dict,title_word_embedding_matrix,entity_emb_matrix):
     MAX_LENGTH = 35    
     news_encoder = get_doc_encoder(title_word_embedding_matrix,entity_emb_matrix)
-
     user_encoder = HirUserEncoder(category_dict,subcategory_dict)
     
     clicked_title_input = Input(shape=(50,35,), dtype='int32')
+    clicked_abs_input = Input(shape=(50,30,), dtype='int32')
     clicked_vert_input = Input(shape=(len(category_dict),50,), dtype='float32')
     clicked_vert_mask_input = Input(shape=(len(category_dict),), dtype='float32')
     clicked_subvert_input = Input(shape=(len(subcategory_dict),50,), dtype='float32')
@@ -288,19 +301,24 @@ def create_model(category_dict,subcategory_dict,title_word_embedding_matrix,enti
     title_inputs = Input(shape=(1+npratio,35,),dtype='int32') 
     vert_inputs = Input(shape=(1+npratio,len(category_dict),),dtype='float32')  #(2,18)
     subvert_inputs = Input(shape=(1+npratio,len(subcategory_dict),),dtype='float32')  #(2,18)
-
+    abs_inputs = Input(shape=(1+npratio,30,),dtype='int32') 
     vert_num_input = Input(shape=(len(category_dict),),dtype='int32')
     subvert_num_input = Input(shape=(len(subcategory_dict),),dtype='int32')
     
     rw_vert_input = Input(shape=(1+npratio,),dtype='float32')
     rw_subvert_input = Input(shape=(1+npratio,),dtype='float32')
-
-    clicked_title_vecs = TimeDistributed(news_encoder)(clicked_title_input)
-    news_vecs = TimeDistributed(news_encoder)(title_inputs)
-    
+    # 拼接title和abs的信息
+    clicked_combined_input = Concatenate(axis=-1)([clicked_title_input, clicked_abs_input])
+    combined_input = Concatenate(axis=-1)([title_inputs, abs_inputs])
+    clicked_title_vecs = TimeDistributed(news_encoder)(clicked_combined_input)
+    news_vecs = TimeDistributed(news_encoder)(combined_input)
     news_vecs = Dropout(0.25)(news_vecs)
     clicked_title_vecs = Dropout(0.25)(clicked_title_vecs)
-
+    # abs_vecs
+    # abs_vecs = TimeDistributed(news_encoder)(abs_inputs)
+    # abs_vecs = Dropout(0.25)(abs_vecs)
+    # clicked_abs_vecs = TimeDistributed(news_encoder)(clicked_abs_input)
+    # clicked_abs_vecs = Dropout(0.25)(clicked_abs_vecs)
     user_subvert_rep,user_vert_rep,user_global_rep = user_encoder([clicked_title_vecs,clicked_vert_input,clicked_vert_mask_input,clicked_subvert_input,clicked_subvert_mask_input,vert_subvert_mask_input,vert_num_input,subvert_num_input])
     
     
@@ -328,8 +346,8 @@ def create_model(category_dict,subcategory_dict,title_word_embedding_matrix,enti
     
     logits = keras.layers.Activation(keras.activations.softmax,name = 'recommend')(scores)     
 
-    model = Model([title_inputs,vert_inputs,subvert_inputs,
-                   clicked_title_input,clicked_vert_input,clicked_vert_mask_input,
+    model = Model([abs_inputs, title_inputs,vert_inputs,subvert_inputs,
+                   clicked_abs_input,clicked_title_input,clicked_vert_input,clicked_vert_mask_input,
                    clicked_subvert_input,clicked_subvert_mask_input,
                    vert_subvert_mask_input,vert_num_input,subvert_num_input,
                   rw_vert_input,rw_subvert_input],logits) # max prob_click_positive

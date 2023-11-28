@@ -76,7 +76,7 @@ def read_news(path,filenames):
 
     
     return news,news_index,category_dict,subcategory_dict,word_dict
-# 可能需要debug一下doc_input
+
 def get_doc_input(news,news_index,category,subcategory,word_dict):
     news_num=len(news)+1
     news_title=np.zeros((news_num,MAX_SENTENCE),dtype='int32')
@@ -92,12 +92,47 @@ def get_doc_input(news,news_index,category,subcategory,word_dict):
             news_title[doc_index,word_id]=word_dict[title[word_id].lower()]
         for word_id in range(min(MAX_SENTENCE,len(abstraction))):
             news_abs[doc_index,word_id]=word_dict[abstraction[word_id].lower()]
+    # news_title = 
     return news_title,news_vert,news_subvert,news_abs 
-# TODO: 读取embedding最好是直接word2vec
+
+#### BERT
+### 1. 加载 BERT 嵌入
+from transformers import BertTokenizer, BertModel
+
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+model = BertModel.from_pretrained('bert-base-uncased')
+def rejoin_sentence(words):
+    sentence = ''
+    for word in words:
+        if word in [".", ",", "!", "?", ";", ":"]:
+            sentence = sentence.rstrip() + word + ' '
+        else:
+            sentence += word + ' '
+    return sentence.strip()
+
+# 使用自定义函数重新组合句子
+# sentence = rejoin_sentence(words)
+
+# 打印结果
+# print(sentence)
+
+def get_bert_embedding(text):
+    # 对文本进行标记化
+    sentence = rejoin_sentence(text)
+    inputs = tokenizer(sentence, return_tensors="pt", padding=True, truncation=True)
+    # 获取BERT的输出
+    outputs = model(**inputs)
+    # 采用最后一层的输出作为嵌入
+    last_hidden_states = outputs.last_hidden_state
+    # 可以选择使用平均池化或其他方法来获得固定大小的向量
+    return last_hidden_states.mean(dim=1)
+#### BERT
+
+### 2. 修改 GloVe 加载函数
 def load_matrix(embedding_path,word_dict):
     embedding_matrix = np.zeros((len(word_dict)+1,300))
     have_word=[]
-    with open(os.path.join(embedding_path,'glove.840B.300d.txt'),'rb') as f:
+    with open(os.path.join(embedding_path,'glove.840B.300d.txt'),'rb') as f: # word: embedding 如果你要修改成BERT的话，你需要获取的就是一个原始的text文本来做BERT的embedding
         while True:
             l=f.readline()
             if len(l)==0:
@@ -111,6 +146,25 @@ def load_matrix(embedding_path,word_dict):
                 have_word.append(word)
     return embedding_matrix,have_word
 
+### 3. 结合 GloVe 和 BERT 嵌入
+def combine_embeddings(text, word_dict, glove_matrix):
+    # 获取BERT嵌入
+    bert_emb = get_bert_embedding(text)
+    text = rejoin_sentence(text)
+    # 获取GloVe嵌入
+    glove_emb = np.zeros((300,))  # 假设GloVe维度是300
+    for word in text.split():
+        if word in word_dict:
+            glove_emb += glove_matrix[word_dict[word]]
+    glove_emb = glove_emb / len(text.split())  # 平均化
+
+    # 结合两种嵌入
+    combined_emb = np.concatenate([glove_emb, bert_emb.detach().numpy()[0]], axis=1)
+    return combined_emb
+
+#### BERT
+
+
 def read_clickhistory(news_index,data_root_path,filename):
     
     lines = []
@@ -119,9 +173,9 @@ def read_clickhistory(news_index,data_root_path,filename):
         lines = f.readlines()
         
     sessions = []
-    count = 10
+    debug_small_limit=5
     for i in range(len(lines)):
-        if i>count:
+        if i > debug_small_limit:
             break
         _,uid,eventime, click, imps = lines[i].strip().split('\t')
         if click == '':
